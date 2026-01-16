@@ -187,7 +187,6 @@ class MultiHeadSelfAttention(nn.Module):
         assert D % H == 0, "emb_dim must be divisible by num_heads"
         head_dim = D // H
 
-        # Project once to qkv for efficiency
         qkv = nn.DenseGeneral(
             features=(H, 3 * head_dim),
             axis=-1,
@@ -200,7 +199,6 @@ class MultiHeadSelfAttention(nn.Module):
         )(x)  # (B, T, H, 3*head_dim)
         q, k, v = jnp.split(qkv, 3, axis=-1)  # each (B, T, H, head_dim)
 
-        # Positions for RoPE
         if position_ids is None:
             position_ids = jnp.arange(T, dtype=jnp.int32)[None, :]  # (1, T)
         cos, sin = rope_cos_sin(position_ids, head_dim, cfg.rope_theta, cfg.dtype)
@@ -209,17 +207,13 @@ class MultiHeadSelfAttention(nn.Module):
 
         sm_scale: float = 1.0 / math.sqrt(head_dim)
 
-        # Helper: reshape to (B, H, L, Dh)
         def _to_bhld(t: jnp.ndarray) -> jnp.ndarray:
             return jnp.transpose(t, (0, 2, 1, 3))
 
-        # Prepare keys/values, maybe update/use cache
-        # cache tensors are kept as (B, H, max_len, Dh)
         if decode:
             assert layer_cache is not None, "`decode=True` requires a LayerCache."
             assert T == 1, "During decoding, pass one token at a time (seq=1)."
 
-            # Write the new k,v at current index
             k_t = _to_bhld(k)  # (B, H, 1, Dh)
             v_t = _to_bhld(v)  # (B, H, 1, Dh)
             updated_k = lax.dynamic_update_slice_in_dim(
@@ -241,7 +235,6 @@ class MultiHeadSelfAttention(nn.Module):
             # Broadcast to batch/heads lazily by relying on JAX broadcasting rules:
             ab = jnp.broadcast_to(ab, (B, cfg.num_heads, 1, K_full))
 
-            # Flash Attention call
             q_bhqd = _to_bhld(q)  # (B, H, 1, Dh)
             y_bhqd = fa_flash_attention(
                 q_bhqd,
@@ -276,7 +269,6 @@ class MultiHeadSelfAttention(nn.Module):
             return y, new_cache
 
         else:
-            # Standard full-sequence flash attention (with causal mask)
             q_bhqd = _to_bhld(q)               # (B, H, T, Dh)
             k_bhkd = _to_bhld(k)               # (B, H, T, Dh)
             v_bhkd = _to_bhld(v)               # (B, H, T, Dh)
